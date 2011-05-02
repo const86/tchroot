@@ -70,6 +70,7 @@ static int process_config(FILE *config)
 	char *line = NULL;
 	size_t len = 0;
 	bool first = true;
+	int res = 1;
 
 	while (getline(&line, &len, config) != -1) {
 		const char *const delim = " \t\n";
@@ -82,24 +83,24 @@ static int process_config(FILE *config)
 			strtok_r(NULL, delim, &tmp) != NULL) {
 			fputs("config: Line must contain exactly two paths\n",
 				stderr);
-			return 1;
+			goto out;
 		}
 
 		if (from[0] != '/' || to[0] != '/') {
 			fputs("config: Paths must be absolute\n", stderr);
-			return 1;
+			goto out;
 		}
 
 		if (first) {
 			if (strcmp(to, "/") != 0) {
 				fputs("config: First target must be /\n",
 					stderr);
-				return 1;
+				goto out;
 			}
 
 			if (chdir(from) == -1) {
 				perror("config:chdir");
-				return 1;
+				goto out;
 			}
 
 			first = false;
@@ -109,13 +110,16 @@ static int process_config(FILE *config)
 		if (mount(from, to + 1, NULL, MS_BIND, NULL) == -1) {
 			fprintf(stderr, "config:bind:%s: %s\n",
 				to, strerror(errno));
-			return 1;
+			goto out;
 		}
 	}
 
+	res = 0;
+
+out:
 	free(line);
 	fclose(config);
-	return 0;
+	return res;
 }
 
 static void cleanup_ns(void)
