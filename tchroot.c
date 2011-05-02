@@ -60,7 +60,8 @@ static void wait_exit(pid_t pid)
 			}
 		}
 
-		sigqueue(pid, si.si_signo, si.si_value);
+		if (si.si_pid == 0 || getpid() != 1)
+			sigqueue(pid, si.si_signo, si.si_value);
 	}
 }
 
@@ -200,16 +201,32 @@ static int init(void *arg)
 		goto fail;
 	}
 
-	if (seteuid(uid) == -1) {
-		perror("child:seteuid");
-		goto fail;
+	pid_t pid = fork();
+	switch (pid) {
+
+	case -1:
+		perror("init:fork");
+		break;
+
+	case 0:
+		if (seteuid(uid) == -1) {
+			perror("child:seteuid");
+			break;
+		}
+
+		if (chdir(task->wd))
+			;
+
+		execvp(task->args[0], task->args);
+		perror("child:exec");
+		break;
+
+	default:
+
+		wait_exit(pid);
+		break;
+
 	}
-
-	if (chdir(task->wd))
-		;
-
-	execvp(task->args[0], task->args);
-	perror("child:exec");
 
 fail:
 	return 127;
