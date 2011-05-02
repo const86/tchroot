@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010 Constantin Baranov
+ * Copyright (C) 2011 Constantin Baranov
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,96 +15,250 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define _XOPEN_SOURCE 700
-#define _BSD_SOURCE
+#define _GNU_SOURCE
 
 #include <errno.h>
-#include <grp.h>
 #include <limits.h>
 #include <locale.h>
-#include <pwd.h>
+#include <sched.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <unistd.h>
+
+static void wait_exit(pid_t pid)
+{
+	sigset_t any, orig;
+	sigfillset(&any);
+	sigprocmask(SIG_BLOCK, &any, &orig);
+
+	struct sigaction child = {
+		.sa_handler = SIG_DFL,
+		.sa_flags = SA_NOCLDSTOP | SA_NOCLDWAIT
+	};
+	sigemptyset(&child.sa_mask);
+	sigaction(SIGCHLD, &child, NULL);
+
+	for (;;) {
+		siginfo_t si;
+		if (sigwaitinfo(&any, &si) == -1)
+			continue;
+
+		if (si.si_signo == SIGCHLD && si.si_pid == pid) {
+			sigprocmask(SIG_SETMASK, &orig, NULL);
+
+			switch (si.si_code) {
+			case CLD_KILLED:
+			case CLD_DUMPED:
+				raise(si.si_status);
+				raise(SIGKILL);
+			default:
+				exit(si.si_status);
+			}
+		}
+
+		sigqueue(pid, si.si_signo, si.si_value);
+	}
+}
+
+static int process_config(FILE *config)
+{
+	char *line = NULL;
+	size_t len = 0;
+	bool first = true;
+
+	while (getline(&line, &len, config) != -1) {
+		const char *const delim = " \t\n";
+		char *tmp;
+
+		char *from = strtok_r(line, delim, &tmp);
+		char *to = strtok_r(NULL, delim, &tmp);
+
+		if (from == NULL || to == NULL ||
+			strtok_r(NULL, delim, &tmp) != NULL) {
+			fputs("config: Line must contain exactly two paths\n",
+				stderr);
+			return 1;
+		}
+
+		if (from[0] != '/' || to[0] != '/') {
+			fputs("config: Paths must be absolute\n", stderr);
+			return 1;
+		}
+
+		if (first) {
+			if (strcmp(to, "/") != 0) {
+				fputs("config: First target must be /\n",
+					stderr);
+				return 1;
+			}
+
+			if (chdir(from) == -1) {
+				perror("config:chdir");
+				return 1;
+			}
+
+			first = false;
+			continue;
+		}
+
+		if (mount(from, to + 1, NULL, MS_BIND, NULL) == -1)
+			perror("config:mount");
+	}
+
+	free(line);
+	fclose(config);
+	return 0;
+}
+
+static void cleanup_ns(void)
+{
+	struct mp {
+		struct mp *next;
+		char path[];
+	};
+
+	char root[PATH_MAX];
+	if (!getcwd(root, sizeof(root)))
+		perror("init:getcwd");
+
+	const size_t root_len = strlen(root);
+	FILE *mtab = fopen("/proc/mounts", "r");
+	char *line = NULL;
+	size_t len = 0;
+	struct mp *head = NULL;
+
+	while (getline(&line, &len, mtab) != -1) {
+		const char *const delim = " \n";
+		char *tmp;
+		strtok_r(line, delim, &tmp);
+		char *mp = strtok_r(NULL, delim, &tmp);
+		char *type = strtok_r(NULL, delim, &tmp);
+
+		if (mp == NULL || type == NULL)
+			continue;
+
+		if (strcmp(type, "proc") != 0 &&
+			strncmp(root, mp, root_len) == 0 &&
+			mp[root_len] == '/')
+			continue;
+
+		size_t mp_len = strlen(mp);
+		struct mp *mpi = malloc(sizeof(*mpi) + mp_len + 1);
+		if (mpi) {
+			memcpy(mpi->path, mp, mp_len + 1);
+			mpi->next = head;
+			head = mpi;
+		}
+	}
+
+	free(line);
+	fclose(mtab);
+
+	while (head) {
+		struct mp *mp = head;
+		head = head->next;
+
+		umount2(mp->path, 0);
+		free(mp);
+	}
+}
+
+struct task {
+	char *const *args;
+	FILE *config;
+	char wd[PATH_MAX];
+};
+
+static int init(void *arg)
+{
+	const struct task *task = arg;
+
+	if (process_config(task->config))
+		goto fail;
+
+	cleanup_ns();
+
+	uid_t uid = getuid();
+
+	if (chroot(".") == -1) {
+		perror("init:chroot");
+		goto fail;
+	}
+
+	if (chdir("/") == -1) {
+		perror("init:chdir/");
+		goto fail;
+	}
+
+	if (mount("proc", "/proc", "proc",
+			MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1) {
+		perror("init:proc");
+		goto fail;
+	}
+
+	if (seteuid(uid) == -1) {
+		perror("child:seteuid");
+		goto fail;
+	}
+
+	if (chdir(task->wd))
+		;
+
+	execvp(task->args[0], task->args);
+	perror("child:exec");
+
+fail:
+	return 127;
+}
 
 int main(int argc, char **argv)
 {
-	if (argc < 3) {
-		fprintf(stderr, "Usage: %s ROOT COMMAND [ARG]...\n", argv[0]);
-		return 1;
-	}
-
-	int rc;
-	const char *const root = argv[1];
-	char *const *const args = argv + 2;
+	char stack[sysconf(_SC_PAGESIZE)];
+	struct task task;
 
 	setlocale(LC_ALL, "");
 
-	uid_t uid = getuid();
-	long pwsize = sysconf(_SC_GETPW_R_SIZE_MAX);
-
-	if (pwsize == -1)
-		return perror("sysconf(_SC_GETPW_R_SIZE_MAX)"), 1;
-
-	// 1. Get current user name.
-	char buf1[pwsize];
-	struct passwd pws1, *pw1;
-	rc = getpwuid_r(uid, &pws1, buf1, sizeof(buf1), &pw1);
-
-	if (!rc && !pw1)
-		rc = ENOENT;
-
-	if (rc) {
-		fprintf(stderr, "getpwuid(%lu): %s\n",
-			(unsigned long)uid, strerror(rc));
-		return 1;
+	if (argc < 3) {
+		fprintf(stderr, "Usage: %s NAME COMMAND [ARG]...\n", argv[0]);
+		goto fail;
 	}
 
-	// 2. Save current working directory.
-	char wd[PATH_MAX];
-	if (!getcwd(wd, sizeof(wd)))
-		return perror("getcwd()"), 1;
+	task.args = argv + 2;
 
-	// 3. Actually change root.
-	if (chroot(root) == -1) {
-		fprintf(stderr, "chroot %s: %s\n",
-			root, strerror(errno));
-		return 1;
+	if (!getcwd(task.wd, sizeof(task.wd))) {
+		perror("getcwd");
+		goto fail;
 	}
 
-	if (chdir("/") == -1)
-		return perror("chdir /"), 1;
-
-	// 4. Determine UID/GID in new environment.
-	char buf2[pwsize];
-	struct passwd pws2, *pw2;
-	rc = getpwnam_r(pw1->pw_name, &pws2, buf2, sizeof(buf2), &pw2);
-
-	if (!rc && !pw2)
-		rc = ENOENT;
-
-	if (rc) {
-		fprintf(stderr, "chroot:getpwuid(%lu): %s\n",
-			(unsigned long)uid, strerror(rc));
-		return 1;
+	if (chdir("/etc/tchroot") == -1) {
+		perror("config:chdir");
+		goto fail;
 	}
 
-	// 5. Set supplementary GIDs, GID and UID.
-	if (initgroups(pw2->pw_name, pw2->pw_gid) == -1)
-		return perror("initgroups()"), 1;
+	task.config = fopen(argv[1], "r");
+	if (task.config == NULL) {
+		perror("config:fopen");
+		goto fail;
+	}
 
-	if (setegid(pw2->pw_gid) == -1)
-		return perror("setegid()"), 1;
+	pid_t pid;
+	if (clone(init, stack + sizeof(stack),
+			CLONE_IO | CLONE_PARENT_SETTID | CLONE_UNTRACED |
+			CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD,
+			&task, &pid, NULL, NULL) == -1) {
+		perror("clone");
+		goto fail_file;
+	}
 
-	if (seteuid(pw2->pw_uid) == -1)
-		return perror("seteuid()"), 1;
+	fclose(task.config);
+	wait_exit(pid);
 
-	// 6. Try to restore working directory. It's OK to fail.
-	if (chdir(wd))
-		;
-
-	// 7. Run.
-	execvp(args[0], args);
-	fprintf(stderr, "exec %s: %s\n", args[0], strerror(errno));
+fail_file:
+	fclose(task.config);
+fail:
 	return 127;
 }
