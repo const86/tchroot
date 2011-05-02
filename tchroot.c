@@ -106,8 +106,11 @@ static int process_config(FILE *config)
 			continue;
 		}
 
-		if (mount(from, to + 1, NULL, MS_BIND, NULL) == -1)
-			perror("config:mount");
+		if (mount(from, to + 1, NULL, MS_BIND, NULL) == -1) {
+			fprintf(stderr, "config:bind:%s: %s\n",
+				to, strerror(errno));
+			return 1;
+		}
 	}
 
 	free(line);
