@@ -255,7 +255,7 @@ int main(int argc, char **argv)
 	setlocale(LC_ALL, "");
 
 	struct task task = {
-		.fake_init = false,
+		.fake_init = true,
 		.wait_child = true
 	};
 
@@ -263,14 +263,12 @@ int main(int argc, char **argv)
 
 	for (int c; (c = getopt(argc, argv, "ibp")) != -1;) {
 		switch (c) {
-		case 'i':
-			task.fake_init = true;
-			break;
 		case 'b':
 			task.wait_child = false;
 			break;
 		case 'p':
 			newpid = 0;
+			task.fake_init = false;
 			break;
 		default:
 			goto help;
@@ -321,9 +319,8 @@ fail:
 
 help:
 	fprintf(stderr,
-		"Usage: %s [-i] [-b] [-p] name [--] command [arguments ...]\n"
+		"Usage: %s [-b] [-p] name [--] command [arguments ...]\n"
 		"Options:\n"
-		"  -i  Fake init process in new container\n"
 		"  -b  Exit immediately\n"
 		"  -p  Don't create new PID namespace\n",
 		argv[0]);
