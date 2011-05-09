@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static void wait_exit(pid_t pid)
@@ -35,19 +36,27 @@ static void wait_exit(pid_t pid)
 	sigfillset(&any);
 	sigprocmask(SIG_BLOCK, &any, &orig);
 
-	struct sigaction child = {
-		.sa_handler = SIG_DFL,
-		.sa_flags = SA_NOCLDSTOP | SA_NOCLDWAIT
-	};
-	sigemptyset(&child.sa_mask);
-	sigaction(SIGCHLD, &child, NULL);
-
 	for (;;) {
 		siginfo_t si;
 		if (sigwaitinfo(&any, &si) == -1)
 			continue;
 
-		if (si.si_signo == SIGCHLD && si.si_pid == pid) {
+		if (si.si_signo != SIGCHLD) {
+			if (si.si_pid == 0 || getpid() != 1)
+				sigqueue(pid, si.si_signo, si.si_value);
+
+			continue;
+		}
+
+		for (;;) {
+			si.si_signo = 0;
+			if (waitid(P_ALL, 0, &si, WEXITED | WNOHANG) ||
+				si.si_signo != SIGCHLD)
+				break;
+
+			if (si.si_pid != pid)
+				continue;
+
 			sigprocmask(SIG_SETMASK, &orig, NULL);
 
 			switch (si.si_code) {
@@ -59,9 +68,6 @@ static void wait_exit(pid_t pid)
 				exit(si.si_status);
 			}
 		}
-
-		if (si.si_pid == 0 || getpid() != 1)
-			sigqueue(pid, si.si_signo, si.si_value);
 	}
 }
 
