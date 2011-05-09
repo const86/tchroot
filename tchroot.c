@@ -301,7 +301,7 @@ int main(int argc, char **argv)
 	pid_t pid;
 	if (clone(init, stack + sizeof(stack),
 			CLONE_IO | CLONE_PARENT_SETTID | CLONE_UNTRACED |
-			CLONE_NEWNS | newpid | CLONE_NEWUTS | SIGCHLD,
+			CLONE_NEWNS | newpid | SIGCHLD,
 			&task, &pid, NULL, NULL) == -1) {
 		perror("clone");
 		goto fail_file;
