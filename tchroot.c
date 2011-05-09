@@ -184,6 +184,7 @@ static void cleanup_ns(void)
 struct task {
 	char *const *args;
 	FILE *config;
+	bool fake_init;
 	char wd[PATH_MAX];
 };
 
@@ -214,32 +215,30 @@ static int init(void *arg)
 		goto fail;
 	}
 
-	pid_t pid = fork();
-	switch (pid) {
+	if (task->fake_init) {
+		pid_t pid = fork();
 
-	case -1:
-		perror("init:fork");
-		break;
-
-	case 0:
-		if (seteuid(uid) == -1) {
-			perror("child:seteuid");
+		switch (pid) {
+		case -1:
+			perror("init:fork");
+			goto fail;
+		case 0:
 			break;
+		default:
+			wait_exit(pid);
 		}
-
-		if (chdir(task->wd))
-			;
-
-		execvp(task->args[0], task->args);
-		perror("child:exec");
-		break;
-
-	default:
-
-		wait_exit(pid);
-		break;
-
 	}
+
+	if (seteuid(uid) == -1) {
+		perror("child:seteuid");
+		goto fail;
+	}
+
+	if (chdir(task->wd))
+		;
+
+	execvp(task->args[0], task->args);
+	perror("child:exec");
 
 fail:
 	return 127;
@@ -248,16 +247,29 @@ fail:
 int main(int argc, char **argv)
 {
 	char stack[sysconf(_SC_PAGESIZE)];
-	struct task task;
 
 	setlocale(LC_ALL, "");
 
-	if (argc < 3) {
-		fprintf(stderr, "Usage: %s NAME COMMAND [ARG]...\n", argv[0]);
-		goto fail;
+	struct task task;
+	bool wait_child = true;
+
+	for (int c; (c = getopt(argc, argv, "ib")) != -1;) {
+		switch (c) {
+		case 'i':
+			task.fake_init = true;
+			break;
+		case 'b':
+			wait_child = false;
+			break;
+		default:
+			goto help;
+		}
 	}
 
-	task.args = argv + 2;
+	if (argc - optind < 2)
+		goto help;
+
+	task.args = argv + optind + 1;
 
 	if (!getcwd(task.wd, sizeof(task.wd))) {
 		perror("getcwd");
@@ -269,7 +281,7 @@ int main(int argc, char **argv)
 		goto fail;
 	}
 
-	task.config = fopen(argv[1], "r");
+	task.config = fopen(argv[optind], "r");
 	if (task.config == NULL) {
 		perror("config:fopen");
 		goto fail;
@@ -285,10 +297,23 @@ int main(int argc, char **argv)
 	}
 
 	fclose(task.config);
-	wait_exit(pid);
+
+	if (wait_child)
+		wait_exit(pid);
+
+	return 0;
 
 fail_file:
 	fclose(task.config);
 fail:
 	return 127;
+
+help:
+	fprintf(stderr,
+		"Usage: %s [-i] [-b] name [--] command [arguments ...]\n"
+		"Options:\n"
+		"  -i  Fake init process in new container\n"
+		"  -b  Exit immediately\n",
+		argv[0]);
+	return 1;
 }
