@@ -185,6 +185,7 @@ struct task {
 	char *const *args;
 	FILE *config;
 	bool fake_init;
+	bool wait_child;
 	char wd[PATH_MAX];
 };
 
@@ -214,6 +215,9 @@ static int init(void *arg)
 		perror("init:proc");
 		goto fail;
 	}
+
+	if (!task->wait_child)
+		setsid();
 
 	if (task->fake_init) {
 		pid_t pid = fork();
@@ -250,8 +254,10 @@ int main(int argc, char **argv)
 
 	setlocale(LC_ALL, "");
 
-	struct task task;
-	bool wait_child = true;
+	struct task task = {
+		.fake_init = false,
+		.wait_child = true
+	};
 
 	for (int c; (c = getopt(argc, argv, "ib")) != -1;) {
 		switch (c) {
@@ -259,7 +265,7 @@ int main(int argc, char **argv)
 			task.fake_init = true;
 			break;
 		case 'b':
-			wait_child = false;
+			task.wait_child = false;
 			break;
 		default:
 			goto help;
@@ -298,7 +304,7 @@ int main(int argc, char **argv)
 
 	fclose(task.config);
 
-	if (wait_child)
+	if (task.wait_child)
 		wait_exit(pid);
 
 	return 0;
