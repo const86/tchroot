@@ -125,7 +125,10 @@ static int process_config(FILE *config)
 		}
 	}
 
-	res = 0;
+	if (first)
+		fputs("config: Empty config\n", stderr);
+	else
+		res = 0;
 
 out:
 	free(line);
