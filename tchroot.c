@@ -18,6 +18,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <locale.h>
 #include <sched.h>
@@ -30,11 +31,11 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static void wait_exit(pid_t pid)
+static void wait_exit(pid_t pid, int guard, bool is_init)
 {
-	sigset_t any, orig;
+	sigset_t any;
 	sigfillset(&any);
-	sigprocmask(SIG_BLOCK, &any, &orig);
+	sigprocmask(SIG_BLOCK, &any, NULL);
 
 	for (;;) {
 		siginfo_t si;
@@ -42,7 +43,7 @@ static void wait_exit(pid_t pid)
 			continue;
 
 		if (si.si_signo != SIGCHLD) {
-			if (si.si_pid == 0 || getpid() != 1)
+			if (si.si_pid == 0 || !is_init)
 				sigqueue(pid, si.si_signo, si.si_value);
 
 			continue;
@@ -57,13 +58,17 @@ static void wait_exit(pid_t pid)
 			if (si.si_pid != pid)
 				continue;
 
-			sigprocmask(SIG_SETMASK, &orig, NULL);
+			int code = si.si_code;
+			if (!is_init && guard != -1 &&
+				fcntl(guard, F_GETFD) == -1 && errno == EBADF)
+				code = CLD_KILLED;
 
-			switch (si.si_code) {
+			switch (code) {
 			case CLD_KILLED:
 			case CLD_DUMPED:
+				close(guard);
+				sigrelse(si.si_status);
 				raise(si.si_status);
-				raise(SIGKILL);
 			default:
 				exit(si.si_status);
 			}
@@ -186,6 +191,7 @@ struct task {
 	FILE *config;
 	bool fake_init;
 	bool wait_child;
+	int guard;
 	char wd[PATH_MAX];
 };
 
@@ -229,7 +235,7 @@ static int init(void *arg)
 		case 0:
 			break;
 		default:
-			wait_exit(pid);
+			wait_exit(pid, task->guard, true);
 		}
 	}
 
@@ -256,7 +262,8 @@ int main(int argc, char **argv)
 
 	struct task task = {
 		.fake_init = true,
-		.wait_child = true
+		.wait_child = true,
+		.guard = -1
 	};
 
 	int newpid = CLONE_NEWPID;
@@ -296,19 +303,20 @@ int main(int argc, char **argv)
 		goto fail;
 	}
 
+	if (task.fake_init)
+		task.guard = open("/", O_RDONLY | O_CLOEXEC);
+
 	pid_t pid;
 	if (clone(init, stack + sizeof(stack),
 			CLONE_IO | CLONE_PARENT_SETTID | CLONE_UNTRACED |
-			CLONE_NEWNS | newpid | SIGCHLD,
+			CLONE_FILES | CLONE_NEWNS | newpid | SIGCHLD,
 			&task, &pid, NULL, NULL) == -1) {
 		perror("clone");
 		goto fail_file;
 	}
 
-	fclose(task.config);
-
 	if (task.wait_child)
-		wait_exit(pid);
+		wait_exit(pid, task.guard, false);
 
 	return 0;
 
