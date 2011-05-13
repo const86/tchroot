@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -189,6 +190,11 @@ static void cleanup_ns(void)
 	}
 }
 
+static struct {
+	char *begin;
+	char *end;
+} args;
+
 struct task {
 	char *const *args;
 	FILE *config;
@@ -200,6 +206,7 @@ struct task {
 
 static int init(void *arg)
 {
+	const char *const proc_name = "init";
 	const struct task *task = arg;
 
 	if (process_config(task->config))
@@ -238,6 +245,9 @@ static int init(void *arg)
 		case 0:
 			break;
 		default:
+			strncpy(args.begin, proc_name, args.end - args.begin);
+			prctl(PR_SET_NAME, proc_name);
+
 			wait_exit(pid, task->guard, true);
 		}
 	}
@@ -259,6 +269,9 @@ fail:
 
 int main(int argc, char **argv)
 {
+	args.begin = argv[0];
+	args.end = strchr(argv[argc - 1], 0);
+
 	char stack[sysconf(_SC_PAGESIZE)];
 
 	setlocale(LC_ALL, "");
