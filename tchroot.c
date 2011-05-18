@@ -232,8 +232,7 @@ static int init(void *arg)
 		goto fail;
 	}
 
-	if (!task->wait_child)
-		setsid();
+	setsid();
 
 	if (task->fake_init) {
 		pid_t pid = fork();
