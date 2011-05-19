@@ -209,6 +209,8 @@ static int init(void *arg)
 	const char *const proc_name = "init";
 	const struct task *task = arg;
 
+	setpgrp();
+
 	if (process_config(task->config))
 		goto fail;
 
@@ -232,8 +234,6 @@ static int init(void *arg)
 		goto fail;
 	}
 
-	setsid();
-
 	if (task->fake_init) {
 		pid_t pid = fork();
 
@@ -246,7 +246,6 @@ static int init(void *arg)
 		default:
 			strncpy(args.begin, proc_name, args.end - args.begin);
 			prctl(PR_SET_NAME, proc_name);
-
 			wait_exit(pid, task->guard, true);
 		}
 	}
@@ -330,8 +329,10 @@ int main(int argc, char **argv)
 		goto fail_file;
 	}
 
-	if (task.wait_child)
+	if (task.wait_child) {
+		tcsetpgrp(STDIN_FILENO, pid);
 		wait_exit(pid, task.guard, false);
+	}
 
 	return 0;
 
