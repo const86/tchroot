@@ -196,6 +196,7 @@ static struct {
 } args;
 
 struct task {
+	const char *file;
 	char *const *args;
 	FILE *config;
 	bool fake_init;
@@ -258,7 +259,11 @@ static int init(void *arg)
 	if (chdir(task->wd))
 		;
 
-	execvp(task->args[0], task->args);
+	if (task->file)
+		execv(task->file, task->args);
+	else
+		execvp(task->args[0], task->args);
+
 	perror("child:exec");
 
 fail:
@@ -275,6 +280,7 @@ int main(int argc, char **argv)
 	setlocale(LC_ALL, "");
 
 	struct task task = {
+		.file = NULL,
 		.fake_init = true,
 		.wait_child = true,
 		.guard = -1
@@ -282,7 +288,7 @@ int main(int argc, char **argv)
 
 	int newpid = CLONE_NEWPID;
 
-	for (int c; (c = getopt(argc, argv, "ibp")) != -1;) {
+	for (int c; (c = getopt(argc, argv, "ibpe:")) != -1;) {
 		switch (c) {
 		case 'b':
 			task.wait_child = false;
@@ -290,6 +296,9 @@ int main(int argc, char **argv)
 		case 'p':
 			newpid = 0;
 			task.fake_init = false;
+			break;
+		case 'e':
+			task.file = optarg;
 			break;
 		default:
 			goto help;
@@ -343,10 +352,11 @@ fail:
 
 help:
 	fprintf(stderr,
-		"Usage: %s [-b] [-p] name [--] command [arguments ...]\n"
+		"Usage: %s [-b] [-p] [-e file] name [--] command [args ...]\n"
 		"Options:\n"
 		"  -b  Exit immediately\n"
-		"  -p  Don't create new PID namespace\n",
+		"  -p  Don't create new PID namespace\n"
+		"  -e  Explicitly set path to executable file\n",
 		argv[0]);
 	return 1;
 }
