@@ -15,3 +15,6 @@ clean:
 
 %.o: %.c
 	$(CC) $(CFLAGS) -o $@ -c $<
+
+ld-linux.so.2: ld-i386.S
+	tchroot i386 -- $(CC) -o $@ $< -nostdlib -s
