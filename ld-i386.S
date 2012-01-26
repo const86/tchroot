@@ -32,8 +32,6 @@ _start:
 	mov $__NR_personality, %eax
 	mov $8, %ebx /* PER_LINUX32 */
 	int $0x80
-	cmp $0, %eax
-	jg .Lfail
 
 	/* Locate envp on stack and save it in %edx */
 	xor %eax, %eax
@@ -71,7 +69,6 @@ _start:
 	mov $__NR_execve, %eax
 	int $0x80
 
-.Lfail:
 	/* Explicitly call exit in case of an error */
 	neg %eax
 	mov %eax, %ebx
